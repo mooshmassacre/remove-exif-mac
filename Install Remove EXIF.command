@@ -1,5 +1,5 @@
 #!/bin/bash
-# Remove EXIF v1.0 installer — Moosh Massacre <gustavo@mooshmassacre.studio>
+# Remove EXIF v1.1 installer — Moosh Massacre <gustavo@mooshmassacre.studio>
 # Installs only into the current user's Library. No administrator access needed.
 set -u
 
@@ -18,6 +18,7 @@ alert() {
 }
 fail() { alert "Installation failed: $1"; exit 1; }
 
+[ -f "$PACKAGE_DIR/Uninstall Remove EXIF.command" ] || fail "Uninstaller is missing from the package."
 [ -f "$SOURCE_SCRIPT" ] || fail "Script is missing from the installer."
 [ -f "$SOURCE_WORKFLOW/Contents/document.wflow" ] || fail "Quick Action is missing from the installer."
 [ -f "$SOURCE_WORKFLOW/Contents/Info.plist" ] || fail "Quick Action configuration is missing."
@@ -53,5 +54,7 @@ fi
 
 /usr/bin/touch "$WORKFLOW_DEST" >/dev/null 2>&1 || true
 /usr/bin/killall pbs >/dev/null 2>&1 || true
-alert "Remove EXIF is installed. Select JPEG or PNG files in Finder, then choose Quick Actions > Remove EXIF."
+/bin/cp "$PACKAGE_DIR/Uninstall Remove EXIF.command" "$SUPPORT/Uninstall Remove EXIF.command" || fail "Cannot install the uninstaller."
+/bin/chmod 755 "$SUPPORT/Uninstall Remove EXIF.command" || fail "Cannot set uninstaller permissions."
+alert "Remove EXIF is installed. Select JPEG, PNG, HEIC, or TIFF files in Finder, then choose Quick Actions > Remove EXIF."
 exit 0

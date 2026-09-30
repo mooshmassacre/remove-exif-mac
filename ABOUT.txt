@@ -1,0 +1,1 @@
+macOS Finder Quick Action that removes embedded creator, provenance, and AI-generated metadata from images.
