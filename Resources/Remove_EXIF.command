@@ -1,13 +1,13 @@
 #!/bin/bash
-# Remove EXIF v1.0 — Moosh Massacre <gustavo@mooshmassacre.studio>
+# Remove EXIF v1.1 — Moosh Massacre <gustavo@mooshmassacre.studio>
 # Copyright (c) 2026 Moosh Massacre. MIT License.
-# macOS: remove metadata from selected JPEG and PNG files in place.
+# macOS: clean JPEG/PNG natively; HEIC/TIFF with optional ExifTool.
 # Remove EXIF, XMP, IPTC, and text chunks without recompressing pixels.
 
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 if [ "${1-}" = "--about" ]; then
-    printf '%s\n' 'Remove EXIF v1.0' 'Moosh Massacre <gustavo@mooshmassacre.studio>' 'Copyright (c) 2026 Moosh Massacre. MIT License.' 'Formats: JPEG, PNG'
+    printf '%s\n' 'Remove EXIF v1.1' 'Moosh Massacre <gustavo@mooshmassacre.studio>' 'Copyright (c) 2026 Moosh Massacre. MIT License.' 'Formats: JPEG, PNG; HEIC/HEIF and TIFF require ExifTool'
     exit 0
 fi
 
@@ -23,7 +23,7 @@ if [ "$#" -eq 0 ]; then
         -e 'try' \
         -e 'tell application "Finder" to set picked to selection as alias list' \
         -e 'end try' \
-        -e 'if (count of picked) is 0 then set picked to choose file with prompt "Select JPEG or PNG images to remove metadata:" with multiple selections allowed' \
+        -e 'if (count of picked) is 0 then set picked to choose file with prompt "Select JPEG, PNG, HEIC, or TIFF images to remove metadata:" with multiple selections allowed' \
         -e 'set paths to {}' \
         -e 'repeat with itemRef in picked' \
         -e 'set end of paths to POSIX path of (itemRef as alias)' \
@@ -37,6 +37,39 @@ if [ "$#" -eq 0 ]; then
     IFS=$'\036' read -r -a picked <<< "$selection"
     set -- "${picked[@]}"
 fi
+
+# Finder does not inherit the interactive shell PATH.
+EXIFTOOL=""
+for candidate in /opt/homebrew/bin/exiftool /usr/local/bin/exiftool /usr/bin/exiftool; do
+    if [ -x "$candidate" ]; then EXIFTOOL="$candidate"; break; fi
+done
+
+clean_extended() {
+    local source="$1" target="$2" detected report remaining
+    [ -n "$EXIFTOOL" ] || { printf '%s\n' 'HEIC and TIFF require ExifTool. Install it from exiftool.org, then try again.'; return 1; }
+    detected=$("$EXIFTOOL" -s3 -FileType -- "$source") || return 1
+    case "$detected" in HEIC|HEIF|TIFF) ;; *) printf '%s\n' 'File content does not match a supported HEIC or TIFF image.'; return 1 ;; esac
+    if [ "$detected" = TIFF ]; then
+        local pages
+        pages=$("$EXIFTOOL" -a -G1 -s -ImageWidth -- "$source") || return 1
+        if printf '%s\n' "$pages" | /usr/bin/grep -Eq '^\[(IFD[1-9][0-9]*|SubIFD[^]]*)\]'; then
+            printf '%s\n' 'Multi-page or SubIFD TIFF is not supported yet; the original was preserved.'; return 1
+        fi
+    fi
+    /bin/cp "$source" "$target" || return 1
+    # TIFF retains required image tags. Keep display orientation and color data.
+    report=$("$EXIFTOOL" -overwrite_original -all= -CommonIFD0= -all:Artist= -all:Author= -all:Copyright= -all:ImageDescription= -all:Software= -all:DateTime= -all:Make= -all:Model= --ICC_Profile:all -tagsFromFile @ -IFD0:Orientation -ColorSpaceTags -- "$target" 2>&1)
+    local write_status=$?
+    # TIFF image structure is stored in IFD0 and must remain. This warning is expected.
+    local unexpected
+    unexpected=$(printf '%s\n' "$report" | /usr/bin/sed "/^Warning: \[minor\] Can't delete IFD0 from TIFF - /d; /^Warning: No writable tags set from /d")
+    if [ "$write_status" -ne 0 ] || [[ "$unexpected" == *Warning:* ]] || [[ "$unexpected" == *Error:* ]]; then
+        printf '%s\n' "$report"; return 1
+    fi
+    [ "$("$EXIFTOOL" -s3 -FileType -- "$target")" = "$detected" ] || { printf '%s\n' 'Output format verification failed.'; return 1; }
+    remaining=$("$EXIFTOOL" -s -GPS:all -XMP:all -IPTC:all -MakerNotes:all -Artist -Author -Creator -Copyright -ImageDescription -UserComment -Software -DateTimeOriginal -CreateDate -ModifyDate -Make -Model -SerialNumber -OwnerName -- "$target" 2>&1) || return 1
+    [ -z "$remaining" ] || { printf '%s\n' 'Metadata verification failed; the original was preserved.'; return 1; }
+}
 
 ok=0
 failed=0
@@ -57,18 +90,24 @@ for input in "$@"; do
     name=${input##*/}
     ext=${name##*.}
     case $(printf '%s' "$ext" | /usr/bin/tr '[:upper:]' '[:lower:]') in
-        jpg|jpeg|png) ;;
-        *) skipped=$((skipped + 1)); details="$details"$'\n'"$name: only JPEG and PNG are supported."; continue ;;
+        jpg|jpeg|png|heic|heif|tif|tiff) ;;
+        *) skipped=$((skipped + 1)); details="$details"$'\n'"$name: unsupported image format."; continue ;;
     esac
 
     parent=${input%/*}
     [ "$parent" = "$input" ] && parent=.
-    temp=$(/usr/bin/mktemp "$parent/.imagem-limpa.XXXXXXXX") || {
+    temp=$(/usr/bin/mktemp "$parent/.Remove_EXIF.XXXXXXXX") || {
         failed=$((failed + 1))
         details="$details"$'\n'"$name: could not create a temporary file."
         continue
     }
 
+    case $(printf '%s' "$ext" | /usr/bin/tr '[:upper:]' '[:lower:]') in
+        heic|heif|tif|tiff)
+            result=$(clean_extended "$input" "$temp" 2>&1)
+            process_status=$?
+            ;;
+        *)
     # Preserve encoded pixels and technical color information.
     result=$(/usr/bin/perl - "$input" "$temp" 2>&1 <<'PERL'
 use strict;
@@ -189,6 +228,8 @@ close $dest or die "Finalize failed: $!";
 PERL
     )
     process_status=$?
+            ;;
+    esac
     mode=$(/usr/bin/stat -f '%Lp' "$input" 2>/dev/null)
     if [ "$process_status" -eq 0 ] && [ -s "$temp" ] && [ -n "$mode" ] && /bin/chmod "$mode" "$temp" && /usr/bin/touch -r "$input" "$temp" && /bin/mv -f "$temp" "$input"; then
             ok=$((ok + 1))
